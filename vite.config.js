@@ -1,14 +1,17 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
-import path from 'path' // 1. Added this to handle file path resolution
+import path from 'path'
+import { fileURLToPath } from 'url' // Added to safely get the directory name
+
+// Safe way to get __dirname in ES modules
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 // https://vite.dev/config/
 export default defineConfig({
-  logLevel: 'error', // Suppress warnings, only show errors
+  logLevel: 'error', 
   plugins: [
     react({
-      // Support for legacy code that imports the base44 SDK with @/integrations, @/entities, etc.
-      // can be removed if the code has been updated to use the new SDK imports from @base44/sdk
       legacySDKImports: process.env.BASE44_LEGACY_SDK_IMPORTS === 'true',
       hmrNotifier: true,
       navigationNotifier: true,
@@ -19,8 +22,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      // 2. This maps the "@" shortcut straight to your "src" directory
       '@': path.resolve(__dirname, './src'),
     },
   },
-});
+})
