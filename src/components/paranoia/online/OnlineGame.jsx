@@ -1,136 +1,125 @@
-import React, { useState, useEffect } from "react";
-import { base44 } from "@/api/base44Client";
-import { getSessionId } from "@/lib/session";
-import OnlineLobby from "@/components/paranoia/online/OnlineLobby";
-import HostLobby from "@/components/paranoia/online/HostLobby";
-import PlayerLobby from "@/components/paranoia/online/PlayerLobby";
-import OnlineQuestionScreen from "@/components/paranoia/online/OnlineQuestionScreen";
-import OnlineWaitingScreen from "@/components/paranoia/online/OnlineWaitingScreen";
-import OnlineResultScreen from "@/components/paranoia/online/OnlineResultScreen";
-import OnlineGameEnd from "@/components/paranoia/online/OnlineGameEnd";
+const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
 
-export default function OnlineGame({ onExit }) {
-  const [roomCode, setRoomCode] = useState("");
-  const [room, setRoom] = useState(null);
-  const [players, setPlayers] = useState([]);
+
+import { QUESTIONS, shuffle } from "./gameData";
+import { getSessionId, generateRoomCode } from "./session";
+
+export async function createRoom(hostName, categories) {
+  const code = generateRoomCode();
   const sessionId = getSessionId();
 
-  useEffect(() => {
-    if (!roomCode) {
-      setRoom(null);
-      setPlayers([]);
-      return;
-    }
+  const room = await db.entities.GameRoom.create({
+    room_code: code,
+    status: "lobby",
+    phase: "question",
+    host_session_id: sessionId,
+    host_name: hostName,
+    categories,
+    questions: [],
+    players: [],
+    round: 0,
+    asker_idx: 0,
+    current_question: "",
+    coin_result: "",
+  });
 
-    let cancelled = false;
+  await db.entities.RoomPlayer.create({
+    room_code: code,
+    name: hostName,
+    session_id: sessionId,
+    order: 0,
+    is_host: true,
+  });
 
-    const fetchRoom = async () => {
-      try {
-        const rooms = await base44.entities.GameRoom.filter({ room_code: roomCode });
-        if (!cancelled && rooms.length > 0) {
-          setRoom(rooms[0]);
-        } else if (!cancelled) {
-          setRoomCode("");
-        }
-      } catch (e) {
-        if (!cancelled) setRoomCode("");
-      }
-    };
+  return code;
+}
 
-    const fetchPlayers = async () => {
-      try {
-        const ps = await base44.entities.RoomPlayer.filter({ room_code: roomCode });
-        if (!cancelled) {
-          setPlayers(ps.sort((a, b) => (a.order || 0) - (b.order || 0)));
-        }
-      } catch (e) {}
-    };
+export async function joinRoom(code, name) {
+  const sessionId = getSessionId();
+  const upperCode = code.toUpperCase().trim();
 
-    fetchRoom();
-    fetchPlayers();
+  const rooms = await db.entities.GameRoom.filter({ room_code: upperCode });
+  if (rooms.length === 0) throw new Error("Room not found");
 
-    const interval = setInterval(() => {
-      fetchRoom();
-      fetchPlayers();
-    }, 2000);
+  const room = rooms[0];
+  if (room.status === "ended") throw new Error("This game has ended");
 
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [roomCode]);
+  const existing = await db.entities.RoomPlayer.filter({
+    room_code: upperCode,
+    session_id: sessionId,
+  });
 
-  const handleExit = () => {
-    setRoomCode("");
-    setRoom(null);
-    setPlayers([]);
-    onExit();
-  };
-
-  if (!roomCode) {
-    return (
-      <OnlineLobby
-        onRoomCreated={(code) => setRoomCode(code)}
-        onRoomJoined={(code) => setRoomCode(code)}
-        onExit={handleExit}
-      />
-    );
+  if (existing.length === 0) {
+    if (room.status === "playing") throw new Error("Game already in progress");
+    const players = await db.entities.RoomPlayer.filter({ room_code: upperCode });
+    await db.entities.RoomPlayer.create({
+      room_code: upperCode,
+      name,
+      session_id: sessionId,
+      order: players.length,
+      is_host: false,
+    });
   }
 
-  if (!room) {
-    return (
-      <div className="min-h-screen bg-[#0a0a0c] flex items-center justify-center">
-        <div className="w-8 h-8 border-4 border-zinc-800 border-t-violet-500 rounded-full animate-spin" />
-      </div>
-    );
+  return upperCode;
+}
+
+export async function startGame(roomId, categories, players) {
+  const shuffledPlayers = shuffle(
+    players.map((p) => ({ name: p.name, session_id: p.session_id }))
+  );
+  const selectedCats = Object.entries(categories)
+    .filter(([_, enabled]) => enabled)
+    .map(([cat]) => cat);
+  const allQuestions = selectedCats.flatMap((cat) => QUESTIONS[cat]);
+  const shuffledQ = shuffle(allQuestions);
+
+  // Find the room to get its ID
+  const rooms = await db.entities.GameRoom.filter({ room_code: roomId });
+  if (rooms.length === 0) throw new Error("Room not found");
+  
+  const room = rooms[0];
+  await db.entities.GameRoom.update(room.id, {
+    status: "playing",
+    phase: "question",
+    round: 0,
+    asker_idx: 0,
+    players: shuffledPlayers,
+    questions: shuffledQ,
+    current_question: shuffledQ[0],
+    coin_result: "",
+  });
+}
+
+export async function flipCoin(roomId) {
+  const result = Math.random() < 0.5 ? "heads" : "tails";
+  
+  // Find the room to get its ID
+  const rooms = await db.entities.GameRoom.filter({ room_code: roomId });
+  if (rooms.length === 0) throw new Error("Room not found");
+  
+  const room = rooms[0];
+  await db.entities.GameRoom.update(room.id, {
+    phase: "result",
+    coin_result: result,
+  });
+}
+
+export async function nextRound(roomId, room) {
+  const nextRoundNum = room.round + 1;
+  const playerCount = room.players?.length || 1;
+
+  if (nextRoundNum >= (room.questions?.length || 0)) {
+    await db.entities.GameRoom.update(room.id, { status: "ended" });
+    return;
   }
 
-  const isHost = room.host_session_id === sessionId;
-
-  if (room.status === "lobby") {
-    return isHost ? (
-      <HostLobby room={room} players={players} onExit={handleExit} />
-    ) : (
-      <PlayerLobby room={room} players={players} onExit={handleExit} />
-    );
-  }
-
-  if (room.status === "ended") {
-    return <OnlineGameEnd onExit={handleExit} />;
-  }
-
-  const currentAsker = room.players?.[room.asker_idx];
-  const isMyTurn = currentAsker?.session_id === sessionId;
-
-  if (room.phase === "question") {
-    if (isMyTurn && currentAsker) {
-      const others = (room.players || [])
-        .filter((_, i) => i !== room.asker_idx)
-        .map((p) => p.name);
-      return (
-        <OnlineQuestionScreen
-          question={room.current_question}
-          asker={currentAsker.name}
-          others={others}
-          roomId={room.id}
-        />
-      );
-    }
-    return <OnlineWaitingScreen asker={currentAsker?.name || "?"} phase="question" />;
-  }
-
-  if (room.phase === "result") {
-    return (
-      <OnlineResultScreen
-        coinResult={room.coin_result}
-        question={room.current_question}
-        asker={currentAsker?.name || "?"}
-        isAsker={isMyTurn}
-        roomId={room.id}
-        room={room}
-      />
-    );
-  }
-
-  return null;
+  const nextAsker = nextRoundNum % playerCount;
+  await db.entities.GameRoom.update(room.id, {
+    round: nextRoundNum,
+    asker_idx: nextAsker,
+    phase: "question",
+    current_question: room.questions[nextRoundNum],
+    coin_result: "",
+  });
 }
