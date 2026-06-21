@@ -1,20 +1,17 @@
-
-import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path' // Required to handle the folder path mappings
 
 // https://vite.dev/config/
 export default defineConfig({
   logLevel: 'error', // Suppress warnings, only show errors
   plugins: [
-    react({
-      // Support for legacy code that imports the base44 SDK with @/integrations, @/entities, etc.
-      // can be removed if the code has been updated to use the new SDK imports from @base44/sdk
-      legacySDKImports: process.env.BASE44_LEGACY_SDK_IMPORTS === 'true',
-      hmrNotifier: true,
-      navigationNotifier: true,
-      analyticsTracker: true,
-      visualEditAgent: true
-    }),
-    react(),
-  ]
-});
+    react() // Clean, standard React plugin without the missing Base44 dependencies
+  ],
+  resolve: {
+    alias: {
+      // This tells Vite that '@/' points directly to your 'src' folder
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+})
